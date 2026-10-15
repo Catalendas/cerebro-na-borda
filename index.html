@@ -1,0 +1,762 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Filme interativo em 3D sobre ESP32, STM32, NXP i.MX RT e Edge AI.">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>
+<title>O Cérebro na Borda</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;800;900&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a fixed WebGL stage plays the film; tall scenes scroll over it with sticky title cards that alternate sides with the camera. */
+:root{
+  --bg:#040A07;
+  --fg:#E4EEE8;
+  --dim:#8EA597;
+  --signal:#7CF2B0;
+  --copper:#E39552;
+  --line:#1A2C22;
+  --scrim:#040A07;
+  --font-display:"Big Shoulders Display","Arial Narrow",Impact,sans-serif;
+  --font-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Consolas,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:auto}
+body{background:var(--bg);color:var(--fg);font-family:var(--font-body);font-size:17px;line-height:1.6;overflow-x:hidden}
+::selection{background:var(--signal);color:var(--bg)}
+
+#stage{position:fixed;inset:0;width:100%;height:100%;display:block;z-index:0;touch-action:pan-y;cursor:grab}
+#stage.dragging{cursor:grabbing}
+.fallback{position:fixed;inset:0;z-index:0;background:radial-gradient(60% 50% at 70% 45%,#123322 0%,var(--bg) 70%)}
+
+.scrim{position:fixed;inset:0;z-index:1;pointer-events:none;transition:background .9s ease;
+  background:linear-gradient(90deg,color-mix(in srgb,var(--scrim) 92%,transparent) 0%,color-mix(in srgb,var(--scrim) 55%,transparent) 38%,transparent 62%)}
+.scrim[data-side="right"]{background:linear-gradient(270deg,color-mix(in srgb,var(--scrim) 92%,transparent) 0%,color-mix(in srgb,var(--scrim) 55%,transparent) 38%,transparent 62%)}
+.scrim[data-side="center"]{background:radial-gradient(70% 60% at 50% 50%,color-mix(in srgb,var(--scrim) 80%,transparent) 0%,color-mix(in srgb,var(--scrim) 30%,transparent) 60%,transparent 100%)}
+.scrim[data-side="bottom"]{background:linear-gradient(0deg,color-mix(in srgb,var(--scrim) 95%,transparent) 0%,color-mix(in srgb,var(--scrim) 60%,transparent) 45%,transparent 70%)}
+.grain{position:fixed;inset:-50%;z-index:2;pointer-events:none;opacity:.07;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  animation:grain 1.2s steps(6) infinite}
+@keyframes grain{0%{transform:translate(0,0)}25%{transform:translate(-3%,2%)}50%{transform:translate(2%,-3%)}75%{transform:translate(-2%,-1%)}100%{transform:translate(1%,3%)}}
+.vignette{position:fixed;inset:0;z-index:2;pointer-events:none;background:radial-gradient(120% 90% at 50% 50%,transparent 55%,color-mix(in srgb,var(--bg) 85%,transparent) 100%)}
+
+.bar{position:fixed;left:0;right:0;height:0;background:#000;z-index:20;transition:height .9s cubic-bezier(.7,0,.2,1);pointer-events:none}
+.bar.top{top:0}.bar.bottom{bottom:0}
+body.cinema .bar{height:7vh}
+
+header.brand{position:fixed;top:0;left:0;right:0;z-index:15;display:flex;justify-content:space-between;align-items:center;
+  padding:calc(env(safe-area-inset-top,0px) + 18px) clamp(16px,4vw,48px) 18px;pointer-events:none;transition:opacity .6s}
+body.cinema header.brand{opacity:0}
+.logo{font-family:var(--font-mono);font-size:13px;letter-spacing:.18em;color:var(--fg);display:flex;gap:10px;align-items:center}
+.logo i{width:9px;height:9px;background:var(--signal);display:inline-block;box-shadow:0 0 12px var(--signal);animation:blink 2.4s infinite}
+@keyframes blink{0%,60%{opacity:1}70%,90%{opacity:.25}}
+.hint{font-family:var(--font-mono);font-size:12px;color:var(--dim);letter-spacing:.08em}
+
+main{position:relative;z-index:3;pointer-events:none}
+.scene{min-height:170vh;padding-inline:clamp(16px,6vw,96px);display:flex;align-items:flex-start}
+.scene.right{justify-content:flex-end}
+.scene.center{justify-content:center;text-align:center}
+.card{position:sticky;top:18vh;width:min(560px,100%);padding-block:24px;pointer-events:auto;display:flex;flex-direction:column;gap:22px}
+.center .card{width:min(820px,100%);align-items:center}
+.card .wide{width:100%}
+
+.act{font-family:var(--font-mono);font-size:12.5px;letter-spacing:.22em;text-transform:uppercase;color:var(--copper);display:flex;gap:14px;align-items:center}
+.act::before{content:"";width:28px;height:1px;background:currentColor}
+.center .act::after{content:"";width:28px;height:1px;background:currentColor}
+h1,h2{font-family:var(--font-display);font-weight:800;text-transform:uppercase;line-height:.88;letter-spacing:.005em;margin:0;text-wrap:balance}
+h1{font-size:clamp(3.6rem,10.5vw,9.5rem)}
+h2{font-size:clamp(3rem,7.4vw,6.6rem)}
+h1 em,h2 em{font-style:normal;color:var(--signal)}
+.lede{font-size:clamp(1.05rem,1.5vw,1.22rem);color:var(--fg);opacity:.92;max-width:34em;margin:0;text-wrap:pretty}
+p{margin:0;color:var(--dim);max-width:36em}
+p strong{color:var(--fg);font-weight:500}
+
+.readout{display:flex;flex-wrap:wrap;gap:0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.readout div{flex:1 1 120px;padding:14px 18px 14px 0;min-width:0}
+.readout div+div{padding-left:18px;border-left:1px solid var(--line)}
+.readout dt{font-family:var(--font-mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim)}
+.readout dd{margin:4px 0 0;font-family:var(--font-display);font-weight:600;font-size:2.4rem;line-height:1;color:var(--fg);font-variant-numeric:tabular-nums}
+.readout dd small{font-family:var(--font-mono);font-size:.8rem;color:var(--signal);margin-left:6px;letter-spacing:.04em}
+.tools{font-family:var(--font-mono);font-size:12.5px;color:var(--dim)}
+.tools b{color:var(--signal);font-weight:500}
+
+.actions{display:flex;flex-wrap:wrap;gap:18px;align-items:center}
+.btn{font:600 15px/1 var(--font-body);color:var(--bg);background:var(--signal);border:0;padding:17px 24px;cursor:pointer;display:inline-flex;gap:12px;align-items:center;letter-spacing:.01em;transition:transform .2s,box-shadow .2s}
+.btn:hover{transform:translateY(-1px);box-shadow:0 10px 40px -10px var(--signal)}
+.btn:focus-visible,.ghost:focus-visible,.hud button:focus-visible,.chapters button:focus-visible{outline:2px solid var(--copper);outline-offset:3px}
+.btn svg{width:14px;height:14px}
+.ghost{font:500 14px/1 var(--font-mono);color:var(--fg);background:none;border:0;border-bottom:1px solid var(--dim);padding:6px 0;cursor:pointer}
+
+.benefits{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);border:1px solid var(--line)}
+.benefits div{background:color-mix(in srgb,var(--bg) 82%,transparent);padding:18px 20px;min-width:0;backdrop-filter:blur(6px)}
+.benefits h3{margin:0 0 6px;font-family:var(--font-mono);font-weight:500;font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:var(--signal)}
+.benefits p{font-size:15px;line-height:1.5}
+
+.pipeline{list-style:none;margin:0;padding:0;counter-reset:s;display:flex;flex-direction:column}
+.pipeline li{counter-increment:s;display:grid;grid-template-columns:44px 1fr;gap:4px 14px;padding:13px 0;border-bottom:1px solid var(--line)}
+.pipeline li::before{content:counter(s,decimal-leading-zero);font-family:var(--font-mono);font-size:12.5px;color:var(--copper);grid-row:span 2;padding-top:4px}
+.pipeline b{font-weight:600;font-size:16.5px;color:var(--fg)}
+.pipeline span{font-size:14.5px;color:var(--dim);grid-column:2}
+
+.cases{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:clamp(16px,2.4vw,32px);width:100%;text-align:left}
+.cases article{border-top:2px solid var(--signal);padding-top:16px;display:flex;flex-direction:column;gap:8px}
+.cases .who{font-family:var(--font-mono);font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--copper)}
+.cases h3{margin:0;font-family:var(--font-display);font-weight:800;text-transform:uppercase;font-size:2rem;line-height:.95}
+.cases p{font-size:15px;line-height:1.55}
+.scene.cases-scene .card{width:min(1180px,100%);top:auto;bottom:12vh;position:sticky;align-self:flex-end;margin-top:auto}
+.scene.cases-scene{align-items:flex-end;padding-bottom:10vh}
+
+.credits{display:grid;grid-template-columns:1fr auto 1fr;gap:10px 22px;width:min(640px,100%);margin-top:6px;font-size:15px}
+.credits dt{text-align:right;font-family:var(--font-mono);font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);padding-top:4px;grid-column:1}
+.credits dd{margin:0;text-align:left;color:var(--fg);grid-column:3}
+.credits .dots{grid-column:2;color:var(--line)}
+.fin{font-family:var(--font-display);font-weight:900;font-size:clamp(4rem,12vw,10rem);line-height:.8;color:var(--fg);letter-spacing:.02em}
+
+.hud{position:fixed;left:0;right:0;bottom:0;z-index:25;padding:0 clamp(16px,4vw,48px) calc(env(safe-area-inset-bottom,0px) + 16px);display:flex;flex-direction:column;gap:10px;pointer-events:none}
+.hud-row{display:flex;align-items:center;gap:16px;pointer-events:auto}
+.hud button.play{width:40px;height:40px;border-radius:50%;border:1px solid color-mix(in srgb,var(--fg) 40%,transparent);background:color-mix(in srgb,var(--bg) 60%,transparent);color:var(--fg);display:grid;place-items:center;cursor:pointer;flex:none;backdrop-filter:blur(8px)}
+.hud button.play svg{width:13px;height:13px}
+.timecode{font-family:var(--font-mono);font-size:12.5px;color:var(--fg);font-variant-numeric:tabular-nums;letter-spacing:.06em;flex:none}
+.track{position:relative;flex:1;height:30px;display:flex;align-items:center;min-width:0}
+.track .rail{position:absolute;left:0;right:0;height:2px;background:color-mix(in srgb,var(--fg) 18%,transparent)}
+.track .fill{position:absolute;left:0;height:2px;background:var(--signal);width:0;box-shadow:0 0 10px var(--signal)}
+.chapters{position:absolute;inset:0;display:flex}
+.chapters button{flex:1;background:none;border:0;border-left:1px solid color-mix(in srgb,var(--fg) 22%,transparent);color:var(--dim);font:500 11px/1 var(--font-mono);letter-spacing:.1em;text-transform:uppercase;text-align:left;padding:0 0 18px 8px;cursor:pointer;height:30px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.chapters button.on{color:var(--signal)}
+.chapters button:hover{color:var(--fg)}
+
+.tip{position:fixed;z-index:30;pointer-events:none;font-family:var(--font-mono);font-size:12px;line-height:1.4;color:var(--fg);background:color-mix(in srgb,var(--bg) 88%,transparent);border:1px solid var(--signal);padding:8px 10px;max-width:260px;transform:translate(14px,14px);opacity:0;transition:opacity .15s}
+.tip.on{opacity:1}
+.tip b{display:block;color:var(--signal);font-weight:500;margin-bottom:2px}
+
+@media (max-width:760px){
+  body{font-size:16px}
+  .scene,.scene.right{justify-content:flex-start}
+  .card{top:auto;bottom:96px;position:sticky;align-self:flex-end;margin-top:52vh}
+  .scene{align-items:flex-end;padding-bottom:110px;min-height:190vh}
+  .scrim,.scrim[data-side]{background:linear-gradient(0deg,color-mix(in srgb,var(--scrim) 96%,transparent) 0%,color-mix(in srgb,var(--scrim) 80%,transparent) 50%,transparent 75%)}
+  .benefits{grid-template-columns:1fr}
+  .cases{grid-template-columns:1fr}
+  .scene.cases-scene .card{bottom:96px}
+  .chapters button{font-size:0;padding:0}
+  .hint{display:none}
+  .readout dd{font-size:2rem}
+  .credits{grid-template-columns:1fr;text-align:center}
+  .credits dt,.credits dd{grid-column:1;text-align:center}
+  .credits .dots{display:none}
+}
+@media (min-width:761px) and (max-height:760px){
+  .card{gap:14px;top:12vh}
+  h1{font-size:clamp(3rem,8vw,6.4rem)}
+  h2{font-size:clamp(2.6rem,5.6vw,4.4rem)}
+  .lede{font-size:1rem}
+  .readout dd{font-size:1.9rem}
+  .pipeline li{padding:8px 0}
+  .pipeline span{font-size:13.5px}
+  .benefits div{padding:12px 16px}
+}
+@media (prefers-reduced-motion:reduce){
+  .grain,.logo i{animation:none}
+}
+</style>
+
+</head>
+<body>
+<canvas id="stage" aria-label="Placas ESP32, STM32 e NXP em 3D. Arraste para girar."></canvas>
+<div class="scrim" id="scrim" data-side="left"></div>
+<div class="vignette"></div>
+<div class="grain"></div>
+<div class="bar top"></div><div class="bar bottom"></div>
+
+<header class="brand">
+  <div class="logo"><i></i>SINAL/LAB</div>
+  <div class="hint" id="hint">Arraste para girar · passe o mouse nas peças</div>
+</header>
+
+<main>
+  <section class="scene" id="abertura" data-ch="Abertura" data-side="left">
+    <div class="card">
+      <div class="act">SINAL/LAB apresenta</div>
+      <h1>O cérebro<br>na <em>borda</em></h1>
+      <p class="lede">Um filme curto sobre três placas do tamanho de um polegar e o que acontece quando elas passam a pensar sozinhas, sem depender da nuvem.</p>
+      <div class="actions">
+        <button class="btn" id="watch" type="button"><svg viewBox="0 0 10 12" aria-hidden="true"><path d="M0 0l10 6-10 6z" fill="currentColor"/></svg>Assistir o filme · 2 min</button>
+        <button class="ghost" type="button" data-go="esp32">ou role para navegar</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="scene" id="esp32" data-ch="ESP32" data-side="left">
+    <div class="card">
+      <div class="act">Ato I · O comunicador</div>
+      <h2>ESP32</h2>
+      <p class="lede">Wi-Fi e Bluetooth no mesmo chip. Foi ele que colocou a internet das coisas na bancada de qualquer pessoa.</p>
+      <dl class="readout">
+        <div><dt>Clock</dt><dd>240<small>MHz</small></dd></div>
+        <div><dt>Núcleos</dt><dd>2<small>Xtensa</small></dd></div>
+        <div><dt>SRAM</dt><dd>520<small>KB</small></dd></div>
+      </dl>
+      <p>A versão <strong>ESP32-S3</strong> adiciona instruções vetoriais que aceleram as contas de uma rede neural. É o que permite reconhecer uma palavra de ativação ou um rosto direto na placa.</p>
+      <div class="tools">Ferramentas: <b>ESP-IDF</b> · <b>Arduino</b> · <b>ESP-DL</b> · <b>ESP-SR</b></div>
+    </div>
+  </section>
+
+  <section class="scene right" id="stm32" data-ch="STM32" data-side="right">
+    <div class="card">
+      <div class="act">Ato II · O preciso</div>
+      <h2>STM32</h2>
+      <p class="lede">A família ARM mais extensa do mercado. Do Cortex-M0+ que roda anos numa bateria ao Cortex-M7 que controla motores em tempo real.</p>
+      <dl class="readout">
+        <div><dt>Núcleos</dt><dd>M0+<small>→ M55</small></dd></div>
+        <div><dt>STM32N6</dt><dd>800<small>MHz</small></dd></div>
+        <div><dt>Na tela</dt><dd>F103<small>Blue Pill</small></dd></div>
+      </dl>
+      <p>O <strong>STM32N6</strong> já traz uma NPU própria, a Neural-ART. E o <strong>ST Edge AI</strong> transforma um modelo treinado em código C otimizado para qualquer STM32.</p>
+      <div class="tools">Ferramentas: <b>STM32CubeIDE</b> · <b>ST Edge AI</b> · <b>NanoEdge AI Studio</b></div>
+    </div>
+  </section>
+
+  <section class="scene" id="nxp" data-ch="NXP" data-side="left">
+    <div class="card">
+      <div class="act">Ato III · O veloz</div>
+      <h2>NXP i.MX RT</h2>
+      <p class="lede">O microcontrolador que se comporta como um processador de aplicação. Nasceu no mundo automotivo e industrial, onde falhar não é opção.</p>
+      <dl class="readout">
+        <div><dt>Cortex-M7</dt><dd>1<small>GHz</small></dd></div>
+        <div><dt>Cortex-M4</dt><dd>400<small>MHz</small></dd></div>
+        <div><dt>SRAM</dt><dd>2<small>MB</small></dd></div>
+      </dl>
+      <p>O <strong>i.MX RT1170</strong> junta dois núcleos num só chip. A linha <strong>MCX N</strong> vai além e integra a NPU eIQ Neutron para inferência acelerada.</p>
+      <div class="tools">Ferramentas: <b>MCUXpresso</b> · <b>eIQ</b> · <b>Zephyr</b></div>
+    </div>
+  </section>
+
+  <section class="scene" id="edge" data-ch="Edge AI" data-side="left">
+    <div class="card">
+      <div class="act">Ato IV · Pensar na borda</div>
+      <h2>Edge <em>AI</em></h2>
+      <p class="lede">Rodar a rede neural no próprio dispositivo. O sensor capta, a placa decide, e nada precisa viajar até um servidor.</p>
+      <div class="benefits">
+        <div><h3>Latência</h3><p>A resposta sai em milissegundos, sem ida e volta pela internet.</p></div>
+        <div><h3>Privacidade</h3><p>Áudio e imagem são processados e descartados ali mesmo.</p></div>
+        <div><h3>Energia</h3><p>Consumo na casa dos miliwatts. Dá para rodar com bateria.</p></div>
+        <div><h3>Offline</h3><p>Sem sinal, sem problema. A inteligência continua funcionando.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="scene right" id="pipeline" data-ch="Do modelo ao chip" data-side="right">
+    <div class="card">
+      <div class="act">Ato V · Do modelo ao chip</div>
+      <h2>Caber em<br><em>kilobytes</em></h2>
+      <ol class="pipeline">
+        <li><b>Coletar dados</b><span>Áudio, vibração ou imagem capturados pelo próprio sensor da placa.</span></li>
+        <li><b>Treinar</b><span>Um modelo pequeno, em TensorFlow ou PyTorch, no computador.</span></li>
+        <li><b>Quantizar para int8</b><span>Pesos de 32 bits viram 8 bits. O modelo fica cerca de 4× menor.</span></li>
+        <li><b>Converter</b><span>TensorFlow Lite Micro, ESP-DL, ST Edge AI ou eIQ geram o código para o chip.</span></li>
+        <li><b>Rodar no MCU</b><span>A inferência acontece em loop, ao lado do resto do firmware.</span></li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="scene center cases-scene" id="casos" data-ch="Casos reais" data-side="bottom">
+    <div class="card">
+      <div class="act">Ato VI · No mundo real</div>
+      <div class="cases">
+        <article><div class="who">ESP32-S3</div><h3>Ouvir</h3><p>Detecção de palavra de ativação com o WakeNet do ESP-SR. O assistente só acorda quando é chamado, e o áudio nunca sai da placa.</p></article>
+        <article><div class="who">STM32</div><h3>Prever</h3><p>Um acelerômetro preso ao motor aprende o padrão de vibração normal. O NanoEdge AI aponta a anomalia antes da falha.</p></article>
+        <article><div class="who">i.MX RT</div><h3>Ver</h3><p>Uma câmera ligada ao i.MX RT detecta pessoas e objetos com modelos do eIQ, a quadros por segundo, sem servidor.</p></article>
+      </div>
+    </div>
+  </section>
+
+  <section class="scene center" id="creditos" data-ch="Créditos" data-side="center">
+    <div class="card">
+      <div class="fin">FIM</div>
+      <div class="act">Elenco, por ordem de entrada</div>
+      <dl class="credits">
+        <dt>O comunicador</dt><span class="dots">·</span><dd>ESP32 · Espressif Systems</dd>
+        <dt>O preciso</dt><span class="dots">·</span><dd>STM32 · STMicroelectronics</dd>
+        <dt>O veloz</dt><span class="dots">·</span><dd>i.MX RT · NXP Semiconductors</dd>
+        <dt>Trilha</dt><span class="dots">·</span><dd>TF Lite Micro · ESP-DL · ST Edge AI · eIQ</dd>
+        <dt>Direção</dt><span class="dots">·</span><dd>Você, no próximo projeto</dd>
+      </dl>
+      <div class="actions" style="justify-content:center">
+        <button class="btn" type="button" id="replay"><svg viewBox="0 0 10 12" aria-hidden="true"><path d="M0 0l10 6-10 6z" fill="currentColor"/></svg>Assistir de novo</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="hud" role="group" aria-label="Controles do filme">
+  <div class="hud-row">
+    <button class="play" id="playBtn" type="button" aria-label="Reproduzir"><svg viewBox="0 0 10 12" id="playIcon" aria-hidden="true"><path d="M0 0l10 6-10 6z" fill="currentColor"/></svg></button>
+    <span class="timecode" id="tc">00:00 / 02:00</span>
+    <div class="track">
+      <div class="rail"></div><div class="fill" id="fill"></div>
+      <div class="chapters" id="chapters"></div>
+    </div>
+  </div>
+</div>
+<div class="tip" id="tip"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(() => {
+const DURATION = 120;
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const scenes = [...document.querySelectorAll('.scene')];
+const scrim = document.getElementById('scrim');
+const fillEl = document.getElementById('fill');
+const tc = document.getElementById('tc');
+const chaptersEl = document.getElementById('chapters');
+const tip = document.getElementById('tip');
+
+scenes.forEach((s) => {
+  const b = document.createElement('button');
+  b.type = 'button'; b.textContent = s.dataset.ch; b.title = s.dataset.ch;
+  b.addEventListener('click', () => { setPlaying(false); goTo(s); });
+  chaptersEl.appendChild(b);
+});
+const chapterBtns = [...chaptersEl.children];
+const goTo = (s) => window.scrollTo({ top: s.offsetTop, behavior: reduce ? 'auto' : 'smooth' });
+document.querySelectorAll('[data-go]').forEach(b => b.addEventListener('click', () => goTo(document.getElementById(b.dataset.go))));
+
+/* ---------- film playback ---------- */
+let playing = false, playY = 0, lastT = 0;
+const playIcon = document.getElementById('playIcon');
+const playBtn = document.getElementById('playBtn');
+function setPlaying(v) {
+  playing = v;
+  document.body.classList.toggle('cinema', v);
+  playIcon.innerHTML = v ? '<path d="M0 0h3.5v12H0zM6.5 0H10v12H6.5z" fill="currentColor"/>' : '<path d="M0 0l10 6-10 6z" fill="currentColor"/>';
+  playBtn.setAttribute('aria-label', v ? 'Pausar' : 'Reproduzir');
+  if (v) { playY = window.scrollY; lastT = performance.now(); if (maxScroll() - playY < 4) { playY = 0; window.scrollTo(0, 0); } }
+}
+const maxScroll = () => document.documentElement.scrollHeight - innerHeight;
+playBtn.addEventListener('click', () => setPlaying(!playing));
+document.getElementById('watch').addEventListener('click', () => setPlaying(true));
+document.getElementById('replay').addEventListener('click', () => { window.scrollTo(0, 0); playY = 0; setPlaying(true); });
+['wheel', 'touchstart'].forEach(ev => addEventListener(ev, (e) => { if (playing && !e.target.closest('.hud')) setPlaying(false); }, { passive: true }));
+addEventListener('keydown', (e) => {
+  if (e.code === 'Space' && !e.target.closest('button')) { e.preventDefault(); setPlaying(!playing); }
+  else if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End'].includes(e.code) && playing) setPlaying(false);
+});
+function stepPlayback(now) {
+  if (!playing) return;
+  const dt = Math.min(0.1, (now - lastT) / 1000); lastT = now;
+  const m = maxScroll();
+  playY += m * dt / DURATION;
+  if (playY >= m) { playY = m; setPlaying(false); }
+  window.scrollTo(0, playY);
+}
+
+/* tall cards on short screens: pin by their bottom edge so nothing hides under the HUD */
+function fitCards() {
+  const mobile = innerWidth < 760;
+  document.querySelectorAll('.card').forEach((c) => {
+    c.style.top = ''; c.style.bottom = '';
+    const room = innerHeight - 90;
+    if (c.offsetHeight > room * (mobile ? 1 : 0.82)) {
+      if (mobile) c.style.bottom = Math.min(96, innerHeight - c.offsetHeight - 16) + 'px';
+      else c.style.top = Math.min(innerHeight * 0.18, room - c.offsetHeight) + 'px';
+    }
+  });
+}
+addEventListener('resize', fitCards);
+document.fonts ? document.fonts.ready.then(fitCards) : fitCards();
+fitCards();
+
+/* ---------- scroll state ---------- */
+function sceneState() {
+  const mid = window.scrollY + innerHeight * 0.5;
+  let i = 0;
+  for (let k = 0; k < scenes.length; k++) if (scenes[k].offsetTop <= mid) i = k;
+  const s = scenes[i];
+  const f = Math.min(1, Math.max(0, (mid - s.offsetTop) / s.offsetHeight));
+  return { i, f };
+}
+const fmt = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+let lastIdx = -1;
+function updateHud(i) {
+  const p = maxScroll() > 0 ? window.scrollY / maxScroll() : 0;
+  fillEl.style.width = (p * 100) + '%';
+  tc.textContent = `${fmt(p * DURATION)} / ${fmt(DURATION)}`;
+  if (i !== lastIdx) {
+    lastIdx = i;
+    chapterBtns.forEach((b, k) => b.classList.toggle('on', k === i));
+    scrim.dataset.side = scenes[i].dataset.side;
+  }
+}
+
+/* ---------- 3D ---------- */
+const canvas = document.getElementById('stage');
+let renderer;
+try { renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' }); }
+catch (e) { renderer = null; }
+if (!renderer || !window.THREE) {
+  canvas.remove();
+  const fb = document.createElement('div'); fb.className = 'fallback'; document.body.prepend(fb);
+  document.getElementById('hint').hidden = true;
+  const loop = (t) => { stepPlayback(t); updateHud(sceneState().i); requestAnimationFrame(loop); };
+  requestAnimationFrame(loop);
+  return;
+}
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputEncoding = THREE.sRGBEncoding;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#040A07');
+scene.fog = new THREE.FogExp2('#040A07', 0.055);
+const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 120);
+
+scene.add(new THREE.HemisphereLight('#bfffe0', '#081510', 0.22));
+const key = new THREE.DirectionalLight('#ffc196', 1.7);
+key.position.set(-4, 7, 5); key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+Object.assign(key.shadow.camera, { left: -10, right: 10, top: 6, bottom: -6, near: 1, far: 30 });
+key.shadow.bias = -0.0004;
+scene.add(key);
+const rim = new THREE.PointLight('#7CF2B0', 2.2, 18, 1.6); rim.position.set(2, 2.5, -4); scene.add(rim);
+const fillL = new THREE.PointLight('#E39552', 1.2, 14, 1.8); fillL.position.set(-6, 1.5, 3); scene.add(fillL);
+
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(80, 80), new THREE.MeshStandardMaterial({ color: '#020604', roughness: 1 }));
+ground.rotation.x = -Math.PI / 2; ground.position.y = -0.62; ground.receiveShadow = true; scene.add(ground);
+const grid = new THREE.GridHelper(60, 120, '#1f5a3c', '#123322');
+grid.position.y = -0.61; grid.material.transparent = true; grid.material.opacity = 0.22; scene.add(grid);
+
+/* helpers */
+function rng(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function texFromCanvas(c) { const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding; t.anisotropy = renderer.capabilities.getMaxAnisotropy(); return t; }
+function pcbTexture({ base, trace, silk, label, sub, seed, aspect }) {
+  const W = 1024, H = Math.round(1024 / aspect);
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d'); const r = rng(seed);
+  g.fillStyle = base; g.fillRect(0, 0, W, H);
+  g.strokeStyle = trace; g.lineCap = 'round'; g.lineJoin = 'round';
+  for (let k = 0; k < 70; k++) {
+    let x = r() * W, y = r() * H; g.lineWidth = 2 + r() * 5; g.beginPath(); g.moveTo(x, y);
+    for (let s = 0; s < 4; s++) {
+      const len = 40 + r() * 180; const dir = Math.floor(r() * 8) * Math.PI / 4;
+      x += Math.cos(dir) * len; y += Math.sin(dir) * len; g.lineTo(x, y);
+    }
+    g.stroke();
+    g.fillStyle = '#c8955a'; g.beginPath(); g.arc(x, y, 5, 0, 7); g.fill();
+    g.fillStyle = base; g.beginPath(); g.arc(x, y, 2.2, 0, 7); g.fill();
+  }
+  g.globalAlpha = 0.9; g.fillStyle = trace; g.fillRect(0, 0, W, 10); g.fillRect(0, H - 10, W, 10); g.globalAlpha = 1;
+  [[30, 30], [W - 30, 30], [30, H - 30], [W - 30, H - 30]].forEach(([x, y]) => { g.fillStyle = '#d7a466'; g.beginPath(); g.arc(x, y, 18, 0, 7); g.fill(); g.fillStyle = '#020604'; g.beginPath(); g.arc(x, y, 10, 0, 7); g.fill(); });
+  g.fillStyle = silk; g.font = '600 30px "IBM Plex Mono", monospace'; g.fillText(label, 70, H - 52);
+  g.font = '400 20px "IBM Plex Mono", monospace'; g.globalAlpha = 0.8; g.fillText(sub, 70, H - 24); g.globalAlpha = 1;
+  return texFromCanvas(c);
+}
+function labelTexture(lines, bg, fg, w = 512, h = 512) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d'); g.fillStyle = bg; g.fillRect(0, 0, w, h);
+  g.fillStyle = fg; g.textAlign = 'center';
+  lines.forEach(([txt, size, y, weight]) => { g.font = `${weight || 500} ${size}px "IBM Plex Mono", monospace`; g.fillText(txt, w / 2, y); });
+  return texFromCanvas(c);
+}
+const mats = {
+  gold: new THREE.MeshStandardMaterial({ color: '#e0b062', metalness: 0.85, roughness: 0.28 }),
+  steel: new THREE.MeshStandardMaterial({ color: '#d4d8dc', metalness: 0.8, roughness: 0.32 }),
+  black: new THREE.MeshStandardMaterial({ color: '#141615', roughness: 0.55 }),
+  plastic: new THREE.MeshStandardMaterial({ color: '#0b0c0c', roughness: 0.7 }),
+  tan: new THREE.MeshStandardMaterial({ color: '#8a6d45', roughness: 0.6 }),
+  white: new THREE.MeshStandardMaterial({ color: '#e9e6dc', roughness: 0.5 }),
+};
+const hoverables = [];
+function tipped(mesh, title, body) { mesh.userData.tip = { title, body }; hoverables.push(mesh); return mesh; }
+function box(w, h, d, mat, x, y, z, parent) { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true; parent.add(m); return m; }
+function topLabeled(w, h, d, sideMat, topTex, x, y, z, parent) {
+  const top = new THREE.MeshStandardMaterial({ map: topTex, roughness: 0.45, metalness: sideMat.metalness * 0.9 });
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), [sideMat, sideMat, top, sideMat, sideMat, sideMat]);
+  m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true; parent.add(m); return m;
+}
+function instanced(geo, mat, positions, parent, rotY = 0) {
+  const im = new THREE.InstancedMesh(geo, mat, positions.length); const d = new THREE.Object3D();
+  positions.forEach((p, k) => { d.position.set(p[0], p[1], p[2]); d.rotation.set(0, p[3] ?? rotY, 0); d.updateMatrix(); im.setMatrixAt(k, d.matrix); });
+  im.castShadow = true; parent.add(im); return im;
+}
+
+const T = 0.06;
+const leds = [];
+function makeBoard(cfg) {
+  const g = new THREE.Group();
+  const L = cfg.L, Wd = cfg.W;
+  const topTex = pcbTexture({ ...cfg.tex, aspect: L / Wd });
+  const edge = new THREE.MeshStandardMaterial({ color: cfg.edge, roughness: 0.6 });
+  const pcb = new THREE.Mesh(new THREE.BoxGeometry(L, T, Wd), [edge, edge, new THREE.MeshStandardMaterial({ map: topTex, roughness: 0.42, metalness: 0.1 }), edge, edge, edge]);
+  pcb.castShadow = pcb.receiveShadow = true; g.add(pcb);
+  tipped(pcb, cfg.boardTip[0], cfg.boardTip[1]);
+  // pin headers underneath
+  const n = cfg.pins, pitch = (L * 0.86) / (n - 1), pinPos = [], padPos = [];
+  [-1, 1].forEach(s => {
+    const z = s * (Wd / 2 - 0.09);
+    box(L * 0.88, 0.1, 0.11, mats.plastic, 0, -T / 2 - 0.05, z, g);
+    for (let k = 0; k < n; k++) { const x = -L * 0.43 + k * pitch; pinPos.push([x, -0.3, z]); padPos.push([x, T / 2 + 0.004, z]); }
+  });
+  const pins = instanced(new THREE.BoxGeometry(0.026, 0.42, 0.026), mats.gold, pinPos, g);
+  tipped(pins, 'Barra de pinos', `${n * 2} pinos com passo de 2,54 mm, prontos para protoboard.`);
+  instanced(new THREE.CylinderGeometry(0.03, 0.03, 0.008, 12), mats.gold, padPos, g);
+  // smd parts
+  const r = rng(cfg.tex.seed + 7), smd = [], smdDark = [];
+  for (let k = 0; k < cfg.smd; k++) {
+    const x = (r() - 0.5) * L * 0.8, z = (r() - 0.5) * (Wd - 0.5);
+    if (cfg.keepOut && cfg.keepOut(x, z)) continue;
+    (r() > 0.5 ? smd : smdDark).push([x, T / 2 + 0.016, z, r() > 0.5 ? 0 : Math.PI / 2]);
+  }
+  instanced(new THREE.BoxGeometry(0.075, 0.032, 0.04), mats.tan, smd, g);
+  instanced(new THREE.BoxGeometry(0.075, 0.032, 0.04), mats.black, smdDark, g);
+  // usb
+  const usb = box(0.3, 0.12, 0.34, mats.steel, -L / 2 + 0.12, T / 2 + 0.06, 0, g);
+  tipped(usb, cfg.usb[0], cfg.usb[1]);
+  // led
+  const ledMat = new THREE.MeshStandardMaterial({ color: '#0a3', emissive: cfg.led, emissiveIntensity: 2 });
+  const led = box(0.07, 0.035, 0.05, ledMat, cfg.ledPos[0], T / 2 + 0.02, cfg.ledPos[1], g);
+  tipped(led, 'LED de status', 'Pisca no ritmo do firmware. O "Olá, mundo" de toda placa.');
+  leds.push({ mat: ledMat, phase: leds.length * 1.7 });
+  const glow = new THREE.PointLight(cfg.led, 0.6, 1.2, 2); glow.position.set(cfg.ledPos[0], 0.15, cfg.ledPos[1]); g.add(glow);
+  leds[leds.length - 1].light = glow;
+  // reset button
+  const btn = box(0.2, 0.06, 0.2, mats.steel, cfg.btnPos[0], T / 2 + 0.03, cfg.btnPos[1], g);
+  box(0.1, 0.05, 0.1, mats.black, cfg.btnPos[0], T / 2 + 0.08, cfg.btnPos[1], g);
+  tipped(btn, 'Botão de reset', 'Reinicia o microcontrolador sem desligar a alimentação.');
+  cfg.extras(g);
+  g.position.set(...cfg.pos);
+  scene.add(g);
+  return g;
+}
+
+/* ESP32 DevKit */
+const esp = makeBoard({
+  L: 2.9, W: 1.42, pins: 19, smd: 34, edge: '#0c0d0d', led: '#3dff8a', ledPos: [-0.75, 0.42], btnPos: [-1.05, -0.45], pos: [-5, 0, 0],
+  tex: { base: '#111413', trace: '#1d2321', silk: '#e8e8e2', label: 'ESP32-DEVKITC', sub: 'V4 · 3V3 · GND · EN · BOOT', seed: 11 },
+  boardTip: ['ESP32 DevKitC', 'Placa de desenvolvimento com regulador, USB-serial e todos os GPIO expostos.'],
+  usb: ['Micro-USB', 'Alimentação e gravação do firmware pelo conversor USB-serial.'],
+  keepOut: (x, z) => x > 0.05 || (x < -0.95 && Math.abs(z) < 0.3),
+  extras(g) {
+    const modBase = box(1.45, 0.035, 0.98, new THREE.MeshStandardMaterial({ color: '#141716', roughness: 0.5 }), 0.73, T / 2 + 0.018, 0, g);
+    tipped(modBase, 'Módulo ESP32-WROOM-32E', 'Chip, flash de 4 MB e cristal num módulo já certificado para rádio.');
+    const shTex = labelTexture([['ESP32-WROOM-32E', 46, 150, 600], ['ESPRESSIF', 34, 230], ['CE  FCC ID: 2AC7Z', 26, 330], ['R 211-201210', 26, 380], ['Wi-Fi · BT', 30, 450]], '#c9cdd1', '#2a2e31', 512, 512);
+    const shield = topLabeled(1.0, 0.12, 0.86, mats.steel, shTex, 0.5, T / 2 + 0.095, 0, g);
+    tipped(shield, 'Blindagem de RF', 'Por baixo dela: o SoC ESP32 dual-core a 240 MHz e 4 MB de flash.');
+    const ant = new THREE.Group();
+    const antMat = new THREE.MeshStandardMaterial({ color: '#c9a060', metalness: 0.7, roughness: 0.35 });
+    for (let k = 0; k < 6; k++) { box(0.025, 0.006, 0.7, antMat, 1.14 + k * 0.055, 0, 0, ant); if (k < 5) box(0.08, 0.006, 0.025, antMat, 1.168 + k * 0.055, 0, (k % 2 ? -1 : 1) * 0.34, ant); }
+    ant.position.y = T / 2 + 0.04; g.add(ant);
+    const antHit = box(0.36, 0.01, 0.8, new THREE.MeshBasicMaterial({ visible: false }), 1.28, T / 2 + 0.04, 0, g);
+    tipped(antHit, 'Antena de PCB 2,4 GHz', 'Uma trilha em zigue-zague faz as vezes de antena. Mantenha cobre e metal longe dela.');
+    const reg = box(0.3, 0.1, 0.2, mats.black, -0.55, T / 2 + 0.05, -0.4, g);
+    tipped(reg, 'Regulador 3,3 V', 'Converte os 5 V do USB para a tensão do ESP32.');
+    const uart = topLabeled(0.32, 0.06, 0.32, mats.black, labelTexture([['CP2102', 80, 280, 600]], '#161818', '#9aa39e', 512, 512), -0.55, T / 2 + 0.03, 0.12, g);
+    tipped(uart, 'Conversor USB-serial', 'Traduz o USB do computador para a UART do ESP32.');
+  }
+});
+
+/* STM32 Blue Pill */
+const stm = makeBoard({
+  L: 2.55, W: 1.0, pins: 20, smd: 26, edge: '#14306e', led: '#ff4a3d', ledPos: [0.85, 0.24], btnPos: [0.55, -0.22], pos: [0, 0, 0],
+  tex: { base: '#1b3f96', trace: '#2a55b8', silk: '#f2f2ec', label: 'STM32F103C8T6', sub: 'BLUE PILL · B12 B13 B14 B15 A8', seed: 23 },
+  boardTip: ['STM32 "Blue Pill"', 'A placa STM32 mais popular entre makers. Barata, pequena e com 37 GPIO.'],
+  usb: ['Micro-USB', 'Alimentação. Para gravar, use um ST-LINK nos pinos SWD.'],
+  keepOut: (x, z) => Math.abs(x + 0.05) < 0.45 && Math.abs(z) < 0.45,
+  extras(g) {
+    const chipTex = labelTexture([['ST', 120, 190, 600], ['STM32F103', 52, 300, 600], ['C8T6', 52, 360], ['GH22K 93', 36, 430]], '#151617', '#a7aeb3', 512, 512);
+    const chip = topLabeled(0.5, 0.06, 0.5, mats.black, chipTex, -0.05, T / 2 + 0.035, 0, g);
+    chip.rotation.y = Math.PI / 4;
+    tipped(chip, 'STM32F103C8 · Cortex-M3', '72 MHz, 64 KB de flash, 20 KB de RAM. Encapsulamento LQFP48.');
+    const legs = []; const q = new THREE.Group(); q.rotation.y = Math.PI / 4; q.position.set(-0.05, T / 2 + 0.01, 0); g.add(q);
+    for (let s = 0; s < 4; s++) for (let k = 0; k < 12; k++) {
+      const o = -0.21 + k * 0.038; const a = s * Math.PI / 2;
+      const px = Math.cos(a) * 0.29, pz = Math.sin(a) * 0.29;
+      legs.push([px + (-Math.sin(a)) * o, 0, pz + Math.cos(a) * o, -a]);
+    }
+    instanced(new THREE.BoxGeometry(0.09, 0.012, 0.016), mats.steel, legs, q);
+    const xtal = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.3, 20), mats.steel);
+    xtal.rotation.z = Math.PI / 2; xtal.scale.set(1, 1, 0.55); xtal.position.set(-0.68, T / 2 + 0.05, 0.1); xtal.castShadow = true; g.add(xtal);
+    tipped(xtal, 'Cristal de 8 MHz', 'Referência de clock. O PLL interno multiplica até 72 MHz.');
+    const jm = new THREE.MeshStandardMaterial({ color: '#f2c200', roughness: 0.5 });
+    [-0.08, 0.08].forEach((z, i) => { const j = box(0.11, 0.1, 0.24, jm, 0.95, T / 2 + 0.05, z * 2.2 - 0.05, g); tipped(j, `Jumper BOOT${i}`, 'Escolhe se o chip inicia pela flash ou pelo bootloader serial.'); });
+    const swd = []; for (let k = 0; k < 4; k++) swd.push([1.18, 0.2, -0.15 + k * 0.1]);
+    const sw = instanced(new THREE.BoxGeometry(0.026, 0.38, 0.026), mats.gold, swd, g);
+    tipped(sw, 'Pinos SWD', 'Gravação e depuração passo a passo com um ST-LINK.');
+  }
+});
+
+/* NXP i.MX RT */
+const nxp = makeBoard({
+  L: 3.1, W: 1.9, pins: 22, smd: 46, edge: '#0a0f14', led: '#7cc8ff', ledPos: [-0.95, 0.68], btnPos: [-1.15, -0.65], pos: [5, 0, 0],
+  tex: { base: '#0e161d', trace: '#1a2833', silk: '#e8eef2', label: 'i.MX RT1170 EVK', sub: 'MIMXRT1176DVMAA · CAN FD · ENET', seed: 37 },
+  boardTip: ['Placa i.MX RT1170', 'Plataforma com memória externa, Ethernet e conectores para câmera e tela.'],
+  usb: ['USB-C', 'Alimentação, depuração e console serial num só cabo.'],
+  keepOut: (x, z) => (Math.abs(x - 0.1) < 0.65 && Math.abs(z) < 0.6) || (x > 0.75 && Math.abs(z) < 0.55) || (x < -0.9 && z > 0.3),
+  extras(g) {
+    const t = labelTexture([['NXP', 110, 170, 600], ['MIMXRT1176', 56, 280, 600], ['DVMAA', 48, 345], ['1 GHz · M7 + M4', 34, 420]], '#121314', '#b8c0c6', 512, 512);
+    const chip = topLabeled(0.82, 0.08, 0.82, mats.black, t, 0.1, T / 2 + 0.045, 0, g);
+    tipped(chip, 'i.MX RT1176 · crossover', 'Cortex-M7 a 1 GHz + Cortex-M4 a 400 MHz, 2 MB de SRAM interna.');
+    const balls = []; for (let a = 0; a < 14; a++) for (let b = 0; b < 14; b++) if (a === 0 || b === 0 || a === 13 || b === 13) balls.push([0.1 - 0.39 + a * 0.06, T / 2 + 0.004, -0.39 + b * 0.06]);
+    instanced(new THREE.SphereGeometry(0.012, 6, 6), mats.gold, balls, g);
+    const ram = topLabeled(0.62, 0.05, 0.3, mats.black, labelTexture([['SDRAM 64MB', 60, 290, 600]], '#141515', '#8f9599', 512, 512), 0.1, T / 2 + 0.03, 0.72, g);
+    tipped(ram, 'SDRAM externa', 'Memória extra para buffers de câmera, tela e modelos maiores.');
+    const enet = box(0.62, 0.42, 0.58, mats.steel, 1.28, T / 2 + 0.21, 0, g);
+    tipped(enet, 'Conector Ethernet', 'Rede cabeada de 1 Gbit com suporte a TSN, comum em automação industrial.');
+    const flash = topLabeled(0.36, 0.05, 0.3, mats.black, labelTexture([['QSPI', 80, 260, 600], ['FLASH', 70, 350]], '#141515', '#8f9599', 512, 512), -0.75, T / 2 + 0.03, -0.25, g);
+    tipped(flash, 'Flash QSPI', 'O firmware roda direto daqui (XIP), sem copiar para a RAM.');
+    const cam = box(0.7, 0.08, 0.2, mats.plastic, -0.35, T / 2 + 0.04, -0.75, g);
+    tipped(cam, 'Conector de câmera (MIPI CSI)', 'Entrada de vídeo para aplicações de visão computacional.');
+  }
+});
+const boards = [esp, stm, nxp];
+
+/* neural net (edge AI) */
+const net = new THREE.Group();
+const layers = [5, 8, 8, 6, 3];
+const nodes = [];
+const nodeGeo = new THREE.SphereGeometry(0.055, 16, 16);
+const nodeMat = new THREE.MeshBasicMaterial({ color: '#7CF2B0', transparent: true, opacity: 1 });
+layers.forEach((n, li) => {
+  const x = -2.6 + li * 1.3; const col = [];
+  for (let k = 0; k < n; k++) {
+    const y = (k - (n - 1) / 2) * 0.36; const m = new THREE.Mesh(nodeGeo, nodeMat); m.position.set(x, y, 0); net.add(m); col.push(m.position);
+  }
+  nodes.push(col);
+});
+const edges = []; const segPts = [];
+for (let li = 0; li < layers.length - 1; li++) nodes[li].forEach((a, ai) => nodes[li + 1].forEach((b, bi) => { edges.push({ li, a, b, bi }); segPts.push(a.x, a.y, a.z, b.x, b.y, b.z); }));
+const segGeo = new THREE.BufferGeometry(); segGeo.setAttribute('position', new THREE.Float32BufferAttribute(segPts, 3));
+const segMat = new THREE.LineBasicMaterial({ color: '#4fbf86', transparent: true, opacity: 0.16 });
+net.add(new THREE.LineSegments(segGeo, segMat));
+const pulseMat = new THREE.MeshBasicMaterial({ color: '#ffd2a6', transparent: true, opacity: 1 });
+const pulses = [];
+const pickEdge = (li, from) => { const c = edges.filter(e => e.li === li && (from === undefined || e.a === from)); return c[Math.floor(Math.random() * c.length)]; };
+for (let k = 0; k < 46; k++) { const m = new THREE.Mesh(new THREE.SphereGeometry(0.03, 8, 8), pulseMat); net.add(m); pulses.push({ m, e: pickEdge(Math.floor(Math.random() * 4)), t: Math.random(), v: 0.6 + Math.random() * 0.8 }); }
+net.position.set(0, 1.45, -0.4);
+net.scale.setScalar(0.58);
+scene.add(net);
+/* data beam from net into the STM32 chip */
+const beamGeo = new THREE.CylinderGeometry(0.008, 0.008, 1, 6); beamGeo.translate(0, 0.5, 0);
+const beamMat = new THREE.MeshBasicMaterial({ color: '#7CF2B0', transparent: true, opacity: 0.5 });
+const beam = new THREE.Mesh(beamGeo, beamMat); beam.position.set(-0.05, 0.08, 0); beam.scale.y = 1.0; scene.add(beam);
+
+/* dust */
+const dustN = 700, dp = new Float32Array(dustN * 3);
+for (let k = 0; k < dustN; k++) { dp[k * 3] = (Math.random() - 0.5) * 26; dp[k * 3 + 1] = Math.random() * 6 - 0.5; dp[k * 3 + 2] = (Math.random() - 0.5) * 14; }
+const dustGeo = new THREE.BufferGeometry(); dustGeo.setAttribute('position', new THREE.BufferAttribute(dp, 3));
+const dust = new THREE.Points(dustGeo, new THREE.PointsMaterial({ color: '#9fe8c3', size: 0.022, transparent: true, opacity: 0.55, depthWrite: false }));
+scene.add(dust);
+
+/* camera keyframes per scene: pos, target, horizontal frame shift (+ = subject to the right) */
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+const keys = [
+  { p: V(-8.6, 1.7, 5.4), t: V(-5, 0.05, 0), s: 0.27, net: 0 },
+  { p: V(-4.3, 3.6, 3.1), t: V(-4.8, 0, 0), s: 0.26, net: 0 },
+  { p: V(1.9, 2.5, 3.1), t: V(0, 0, 0), s: -0.26, net: 0 },
+  { p: V(6.9, 3.1, 3.9), t: V(5.1, 0.05, 0), s: 0.26, net: 0 },
+  { p: V(0.4, 2.3, 7.0), t: V(0, 0.95, 0), s: 0.2, net: 1 },
+  { p: V(-2.8, 1.9, 5.0), t: V(0, 0.85, 0), s: -0.22, net: 1 },
+  { p: V(0, 7.2, 8.8), t: V(0, 0.2, -0.6), s: 0, net: 0.5 },
+  { p: V(0, 1.6, 11.5), t: V(0, 0.3, 0), s: 0, net: 0.15 },
+];
+const cur = { p: keys[0].p.clone(), t: keys[0].t.clone(), s: keys[0].s, net: 0 };
+const ease = (x) => x * x * (3 - 2 * x);
+
+/* interaction */
+let yaw = 0, pitch = 0, tYaw = 0, tPitch = 0, drag = null;
+const mouse = new THREE.Vector2(-9, -9), ndc = { x: 0, y: 0 };
+canvas.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY, id: e.pointerId }; canvas.classList.add('dragging'); });
+addEventListener('pointerup', () => { drag = null; canvas.classList.remove('dragging'); });
+addEventListener('pointercancel', () => { drag = null; canvas.classList.remove('dragging'); });
+addEventListener('pointermove', (e) => {
+  ndc.x = (e.clientX / innerWidth) * 2 - 1; ndc.y = -(e.clientY / innerHeight) * 2 + 1;
+  if (drag) {
+    tYaw += (e.clientX - drag.x) * 0.006; tPitch = Math.max(-0.5, Math.min(0.6, tPitch + (e.clientY - drag.y) * 0.004));
+    drag.x = e.clientX; drag.y = e.clientY;
+    if (playing && e.pointerType !== 'mouse') setPlaying(false);
+  }
+  if (e.pointerType === 'mouse' && e.target === canvas) { mouse.set(ndc.x, ndc.y); tip.style.left = e.clientX + 'px'; tip.style.top = e.clientY + 'px'; }
+  else mouse.set(-9, -9);
+});
+canvas.addEventListener('pointerleave', () => mouse.set(-9, -9));
+const ray = new THREE.Raycaster();
+let hovered = null;
+function updateHover() {
+  if (mouse.x < -2 || drag) { if (hovered) { tip.classList.remove('on'); hovered = null; } return; }
+  ray.setFromCamera(mouse, camera);
+  const hit = ray.intersectObjects(hoverables, false).find(h => h.object.visible !== false || h.object.userData.tip);
+  const obj = hit ? hit.object : null;
+  if (obj !== hovered) {
+    hovered = obj;
+    if (obj) { tip.innerHTML = `<b>${obj.userData.tip.title}</b>${obj.userData.tip.body}`; tip.classList.add('on'); canvas.style.cursor = 'help'; }
+    else { tip.classList.remove('on'); canvas.style.cursor = ''; }
+  }
+}
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false); camera.aspect = w / h;
+  camera.fov = w < 760 ? 46 : 34;
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize); resize();
+
+const tmpP = new THREE.Vector3(), tmpT = new THREE.Vector3(), off = new THREE.Vector3();
+const clock = new THREE.Clock();
+function frame(now) {
+  stepPlayback(now);
+  const dt = Math.min(0.05, clock.getDelta()); const time = clock.elapsedTime;
+  const { i, f } = sceneState();
+  updateHud(i);
+  const a = keys[i], b = keys[Math.min(i + 1, keys.length - 1)];
+  const k = ease(Math.max(0, Math.min(1, (f - 0.5) / 0.5)));
+  tmpP.lerpVectors(a.p, b.p, k); tmpT.lerpVectors(a.t, b.t, k);
+  const goalS = a.s + (b.s - a.s) * k, goalNet = a.net + (b.net - a.net) * k;
+  const damp = 1 - Math.pow(0.0025, dt);
+  cur.p.lerp(tmpP, damp); cur.t.lerp(tmpT, damp); cur.s += (goalS - cur.s) * damp; cur.net += (goalNet - cur.net) * damp;
+
+  if (!drag) { tYaw *= 0.985; tPitch *= 0.985; }
+  yaw += (tYaw - yaw) * 0.12; pitch += (tPitch - pitch) * 0.12;
+  const sway = reduce ? 0 : Math.sin(time * 0.25) * 0.06;
+  off.subVectors(cur.p, cur.t);
+  off.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw + sway + (reduce ? 0 : ndc.x * -0.04));
+  const right = new THREE.Vector3().crossVectors(off, new THREE.Vector3(0, 1, 0)).normalize();
+  off.applyAxisAngle(right, pitch + (reduce ? 0 : ndc.y * 0.025));
+  if (innerWidth >= 760) off.multiplyScalar(Math.max(1, 2.05 / camera.aspect));
+  camera.position.copy(cur.t).add(off);
+  camera.lookAt(cur.t);
+  const w = innerWidth, h = innerHeight, mobile = w < 760;
+  camera.setViewOffset(w, h, mobile ? 0 : -cur.s * w, mobile ? h * 0.2 : 0, w, h);
+
+  boards.forEach((g, n) => { g.position.y = reduce ? 0 : Math.sin(time * 0.6 + n * 2) * 0.03; g.rotation.y = reduce ? 0 : Math.sin(time * 0.18 + n) * 0.06; });
+  leds.forEach((l) => { const on = (Math.sin(time * 3 + l.phase) > 0.2) ? 1 : 0.15; l.mat.emissiveIntensity = 0.4 + on * 2.4; l.light.intensity = on * 0.7; });
+
+  const nv = cur.net;
+  net.visible = nv > 0.02; beam.visible = nv > 0.02;
+  nodeMat.opacity = nv; segMat.opacity = 0.18 * nv; pulseMat.opacity = nv; beamMat.opacity = 0.45 * nv * (0.6 + 0.4 * Math.sin(time * 6));
+  net.rotation.y = reduce ? 0 : Math.sin(time * 0.3) * 0.15;
+  if (net.visible) pulses.forEach((p) => {
+    p.t += dt * p.v * (reduce ? 0.3 : 1);
+    if (p.t >= 1) { p.t = 0; const nx = p.e.li + 1 < layers.length - 1 ? pickEdge(p.e.li + 1, p.e.b) : pickEdge(0); p.e = nx || pickEdge(0); }
+    p.m.position.lerpVectors(p.e.a, p.e.b, p.t);
+  });
+  const pos = dustGeo.attributes.position.array;
+  if (!reduce) { for (let n = 1; n < pos.length; n += 3) { pos[n] += dt * 0.05; if (pos[n] > 5.5) pos[n] = -0.5; } dustGeo.attributes.position.needsUpdate = true; }
+
+  updateHover();
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+document.fonts && document.fonts.ready.then(() => {});
+})();
+</script>
+</body>
+</html>
